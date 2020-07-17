@@ -1,0 +1,38 @@
+---
+title: "broadway"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(tidyverse)
+theme_set(theme_light())
+tuesdata <- tidytuesdayR::tt_load('2020-04-28')
+tuesdata <- tidytuesdayR::tt_load(2020, week = 18)
+```
+
+```{r}
+grosses<-tuesdata$grosses
+grosses %>% filter(show %in% c("Hamilton", "The Lion King")) %>% 
+  ggplot(aes(week_ending,avg_ticket_price,color=show))+
+  geom_line()+
+  scale_y_continuous(labels=scales::dollar)+
+  expand_limits(y=0)
+  
+```
+
+#because there is this periodicity, we could smooth the data. 
+
+```{r}
+library(tidymetrics)
+grosses %>% 
+  filter(show=="The Lion King") %>%  
+  rename(date=week_ending) %>% 
+  cross_by_periods(c("month","period"))
+
+```

@@ -1,0 +1,110 @@
+---
+title: "beerproduction"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE}
+library(tidyverse)
+library(magrittr)
+library(tidytuesdayR)
+library(lubridate)
+theme_set(theme_light())
+library(tidymodels)
+
+```
+
+```{r message=FALSE}
+brewing_materials_raw <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-03-31/brewing_materials.csv')
+
+```
+
+####explore data
+#not about predictions but about understanding the relationship. Resampling
+brewing_materials_raw %>%  count(type, sort=TRUE)
+brewing_materials_raw %>%  count(type,wt=month_current, sort=TRUE)
+#how much sugar do beer producers need per barrel of malt 
+
+```{r}
+brewing_filtered<-brewing_materials_raw %>% 
+  filter(type%in% c("Malt and malt products",
+                    "Sugar and syrups", 
+                    "Hops (dry)"),
+         year<2016,
+         month!=12) %>% 
+  mutate(date=paste0(year, "-", month, "-01"),
+         date=lubridate::ymd(date)) 
+
+ brewing_filtered %>%  ggplot(aes(date, month_current, color=type))+
+  geom_point()
+```
+
+```{r}
+brewing_materials<-brewing_filtered %>%  
+  select(date, type, month_current) %>% 
+  pivot_wider(names_from =type, values_from = month_current) %>% 
+  janitor::clean_names()
+
+brewing_materials %>% 
+  ggplot(aes(malt_and_malt_products, sugar_and_syrups))+
+  geom_smooth(method = "lm")+
+  geom_point()
+```
+```{r}
+#fit a model, using modeling fundamentals
+beer_fit<-  lm(sugar_and_syrups~ 0 + malt_and_malt_products, 
+     data=brewing_materials)
+summary(beer_fit)
+#Estimate  0.207764 shows how much sugar its need for each barrer of malt
+tidy(beer_fit) # this is to get 
+
+
+
+```
+
+#bootstrap resampling
+
+```{r}
+set.seed(123)
+beer_boot<-bootstraps(brewing_materials, 
+                      times=1e3, 
+                      appatent=TRUE)
+
+beer_models<-beer_boot %>% 
+  mutate(model=map(splits, ~lm(sugar_and_syrups~ 0 + malt_and_malt_products, 
+     data=.)), 
+     coef_info=map(model,tidy))
+     
+beer_coeficients<-beer_models %>% 
+  unnest(coef_info)
+```
+
+#evaluate results
+
+```{r}
+beer_coeficients %>% 
+  ggplot(aes(estimate))+
+  geom_histogram(alpha=0.7)
+```
+
+```{r}
+int_pctl(beer_models,coef_info)
+#beermodels has the resample, and which colum names has the infor about CI
+
+#tidymodels has 3verb: tidy, glance and augment. Augment adds info into the original data
+beer_aug<-beer_models %>% 
+  sample_n(200) %>% 
+  mutate(augmented=map(model,augment)) %>% 
+  unnest(augmented)
+  
+beer_aug %>% 
+ ggplot(aes(malt_and_malt_products, sugar_and_syrups))+
+  geom_line(aes(y=.fitted,group=id),alpha=0.2,color="cyan3")+
+  geom_point()
+`
+```
+

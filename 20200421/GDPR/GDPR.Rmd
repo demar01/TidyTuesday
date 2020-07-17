@@ -1,0 +1,298 @@
+---
+title: "gdpr"
+output: html_document
+
+---
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r message=FALSE}
+library(tidyverse)
+library(magrittr)
+library(tidytuesdayR)
+library(lubridate)
+library(scales)
+library(scales)
+theme_set(theme_light())
+
+```
+
+```{r message=FALSE}
+tuesdata<-tidytuesdayR::tt_load('2020-04-21')
+gdpr_text <- readr::read_tsv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-04-21/gdpr_text.tsv')
+
+gdpr_violations <- readr::read_tsv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-04-21/gdpr_violations.tsv') %>% 
+  mutate(date=na_if(mdy(date),"1970-01-01"))%>%  
+  rename(country=name)
+```
+
+
+```{r message=FALSE}
+gdpr_violations %>%  View()
+gdpr_violations %>% 
+  count(country=fct_lump(country,8,w=price),
+        sort=TRUE,wt=price,name="total_price") %>% 
+mutate(country=fct_reorder(country,total_price)) %>% 
+  ggplot(aes(total_price,country))+geom_col()+
+  scale_x_continuous(labels=dollar_format())
+```
+
+```{r message=FALSE}
+gdpr_violations %>% 
+  count(month=floor_date(date,"month"),
+        country=fct_lump(country,6,w=price),
+         sort=TRUE,wt=price,name="total_price") %>% 
+  mutate(country=fct_reorder(country,-total_price,sum)) %>% 
+  ggplot(aes(month, total_price,fill=country))+
+  geom_col()+
+  scale_y_continuous(labels = dollar_format())+
+  labs(x="time",
+       y="total fines",
+       fill="country")
+```
+```{r label, options}
+gdpr_violations %>% arrange(date)
+```
+```{r message=FALSE}
+gdpr_violations %>% count(source,country, sort=TRUE)
+
+```
+```{r message=FALSE}
+gdpr_violations %>% count(controller,country, sort=TRUE)
+```
+
+
+```{r message=FALSE}
+gdpr_violations %>% 
+select(controller, date,article_violated,type,summary,price)%>% 
+  mutate(summary=str_trunc(summary,140)) %>% 
+  arrange(desc(price)) %>% 
+  mutate(price=dollar(price)) %>% 
+  head(10) %>% 
+  View()
+knitr:table()
+```
+#does the same violation has same monetary fine across countries?
+
+```{r}
+gdpr_violations %>% 
+mutate(type=fct_lump(type,8,w=price),
+       type=fct_reorder(type,price),
+       country=fct_lump(country,5)) %>% 
+  ggplot(aes(price,type))+
+  geom_boxplot()+
+  #to get a sense of the individual numbers. geom_jitter ads points with some noise on each direction. 
+  geom_jitter(aes(color=country),width = 0,height=.25)+
+  scale_x_log10(labels=dollar_format())
+#potentially here we could fit a model to see if there is any relation between fine type and country....
+```
+
+
+
+
+#which article was violated?
+
+```{r}
+article_title<-gdpr_text %>% 
+  distinct(article,article_title)
+
+separate_articless<-gdpr_violations %>% 
+  separate_rows(article_violated,sep= "\\|") %>% 
+  rename(article=article_violated) %>% 
+  inner_join(article_title,by="article")
+
+```
+```{r}
+gdpr_text<-tuesdata$gdpr_text
+gdpr_text %>% 
+  distinct(article,article_title)
+```
+
+#Vodafone seems to be one of companies that gets most fines.
+```{r}
+gdpr_violations %>%  
+  count(controller,sort=TRUE)
+```
+
+```{r}
+gdpr_violations %>%  
+  filter(str_detect(controller,"Vodafone")) %>% 
+  group_by(date,country) %>% 
+  summarise(violations=n(),
+            total_fine=sum(price)) %>% 
+  ggplot(aes(date, total_fine, size=violations,color=country))+
+  geom_point()+
+  scale_y_continuous(labels=dollar_format())+
+  labs(title="Vodafone GDPR violations",
+       color="",
+       x="Time",
+       y="violation this day")
+```
+
+#interactive dashboard with tidymetrixs package
+```{r}
+library(tidymetrics)
+summarised<-gdpr_violations %>%  
+  filter(!is.na(date)) %>% 
+  mutate(country=fct_lump(country,6,w=price),
+         article_title=fct_lump(article_violated,6,w=price),
+         type=fct_lump(type,6,w=price)) %>% 
+  cross_by_dimensions(country,article_title,type) %>% 
+  cross_by_periods(c("month","quarter")) %>% 
+  summarise(num_violations=n_distinct(id),
+            total_fine=sum(price)) %>% 
+  ungroup()
+  
+#no I want to document this combination metrics 
+use_metrics_scaffold(summarised)
+library(shinymetrics)
+```
+
+
+#from the modeling: are higher fines associated with  different articles. 
+gdpr_raw <- readr::read_tsv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-04-21/gdpr_violations.tsv') 
+
+```{r}
+gdpr_tidy<-gdpr_raw %>% 
+  transmute(id, 
+            price, 
+            coutry=name, 
+            article_violated, 
+            articles=str_extract_all(article_violated, "Art. [:digit:]+|Art.[:digit:]+"))%>% mutate(total_articles=map_int(articles, length)) %>% 
+  unnest(articles) %>%  #unnest is to display the actual values to the character list
+  add_count(articles) %>% #creates an n() column and is the shortcut for group_by +add_tally()
+  filter(n>10) %>% 
+  select(-n)
+#str_extract_all creates a chr list 
+```
+
+```{r}
+library(ggbeeswarm) #is to display all data when not too many data on plot
+gdpr_tidy %>%  
+  mutate(articles= str_replace_all(articles,"Art. ","Article "),
+        articles=fct_reorder(articles, price)) %>% 
+  ggplot(aes(articles, price+1,color=articles,fill=articles)) +
+  geom_boxplot(alpha=0.2, outlier.colour = NA)+
+  geom_quasirandom()+
+   scale_y_log10(labels=dollar_format(prefix = "€"))+
+  theme(legend.position = "none")
+
+```
+
+#pivot wider data to start modeling. 
+```{r}
+gdpr_violations<-gdpr_tidy %>%  
+  mutate(value=1) %>%  
+  select(-article_violated) %>% 
+  pivot_wider(names_from = articles,values_from = value,
+              values_fn=list(value=max), values_fill = list(value=0)) 
+
+```
+
+# modeling: are higher fines associated with  different articles. 
+
+```{r l}
+library(tidymodels)
+#abstraction in tidymodels called workflow to carry arround modeling pieces
+#what we are predicting is price
+gdpr_rec<-recipe(price ~., data=gdpr_violations) %>% 
+  #data preporcesing with recipes
+  update_role(id, new_role = "id") %>% 
+  #id is not a predictor or an outcome, just an ID
+  step_log(price, base=10, offset=1, skip = TRUE) %>% 
+  #modeling this on the log scale
+  step_other(coutry, other="Other") %>% 
+  #to reduce the levels for the factor 
+  step_dummy(all_nominal()) %>% 
+  #manually do my dummy variables. Is gonna turn everything into 1 and 0  
+  step_zv(all_predictors())
+  #to remove stuff that has 0 variants. 
+
+#when you define a recepy you have not decine with factors you need to collapse or any other information. To do that I have to prep the recipe. 
+
+gdpr_prep<-prep(gdpr_rec)
+#after preparation it has gone through the data...
+
+juice(gdpr_prep)
+#to see how data looks like after modeling
+# the countries get now 0/1. Remember the model is price predicted by article, irrespondent of country 
+
+lm(price ~.,data=juice(gdpr_prep))
+
+```
+
+```{r}
+#if recipes get too complicates, to carring models around, I can use a workflow. It has the unprocess recipe +model. You can fit a workflow like you can fit a model 
+gdpr_wf<-workflow() %>% 
+  add_recipe(gdpr_rec) %>% 
+  #add the uprep recipe to it
+  add_model(linear_reg() %>% 
+              set_engine("lm"))
+```
+
+```{r}
+gdpr_fit<-gdpr_wf %>% 
+  fit(data=gdpr_violations)
+```
+
+#explore resuls
+```{r label, options}
+gdpr_fit %>% 
+  pull_workflow_fit() %>% 
+  tidy()
+#the more articles you have violated the higher your fine is and if you are violated art 15 the lower your fine is 
+
+#interestingly there are no differece across countries.. ( cuz the p value is >0.05)
+```
+
+
+```{r}
+#lets make new data that we can predict from 
+new_gdpr<-crossing(coutry="Other",
+         `Art. 5`=0:1,
+         `Art. 6`=0:1,
+         `Art. 13`=0:1,
+         `Art. 15`=0:1,
+         `Art. 32`=0:1) %>% 
+  mutate(total_articles=`Art. 5`+`Art. 6`+`Art. 13`+`Art. 15`+`Art. 32`,
+         id=row_number())
+```
+
+```{r}
+mean_predicton<-predict(gdpr_fit, 
+        new_data = new_gdpr)
+
+ci_predicton<-predict(gdpr_fit, 
+        new_data = new_gdpr, 
+        type="conf_int")
+
+gdpr_result<-new_gdpr %>% 
+  bind_cols(mean_predicton) %>% 
+  bind_cols(ci_predicton)
+```
+
+```{r}
+gdpr_result %>% 
+  filter(total_articles==1) %>% 
+  pivot_longer(`Art. 5`:`Art. 32`) %>% 
+  filter(value>0) %>% 
+  mutate(name= str_replace_all(name,"Art. ","Article "),
+        name=fct_reorder(name, .pred)) %>% 
+
+  ggplot(aes(name,10 ^ .pred, color=name))+
+  geom_errorbar(aes(ymin=10 ^.pred_lower,
+                    ymax=10 ^.pred_upper),
+                width=0.2, alpha=0.7)+
+  geom_point()+
+     scale_y_log10(labels=dollar_format(prefix = "€"))+
+  labs(x=NULL, 
+       y="predicted GDPR fine (EUR)")+
+  theme(legend.position = "none")
+
+#art 15 has lowest predictive value 
+```
