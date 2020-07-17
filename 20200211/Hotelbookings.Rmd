@@ -1,0 +1,194 @@
+---
+title: "Hotel bookings"
+author: "Maria Dermit"
+date: "r.Sys.Date()"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+  knitr::opts_chunk$set(cache = TRUE, warning = FALSE, message = FALSE, echo=TRUE, 
+                        dpi = 100, fig.width = 8,fig.height = 5)
+library(tidyverse)
+library(devtools)
+library(silgelib)
+library(kknn)
+  
+```
+
+Lets build a model for hotel bookings. Which hotels have kids, per state
+
+## Explore the data
+```{r}
+hotels <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-02-11/hotels.csv')
+hotels %>% count(is_canceled)
+#we are going to keep only the non-cancelled reservations. 
+hotel_stays<-hotels  %>% filter(is_canceled==0) %>% 
+  mutate(children=case_when(children+babies>0~ "children",
+                             TRUE ~ "none"),
+         required_car_parking_spaces=case_when(required_car_parking_spaces>0~"parking",TRUE ~"none")) %>% select(-is_canceled,-reservation_status,-babies)
+                      
+hotel_stays%>% count(children)
+```
+
+```{r}
+library(skimr)
+#plots a summary of the tibble!!
+skim(hotel_stays)
+```
+```{r}
+hotel_stays %>% 
+  mutate(arrival_date_month=factor(arrival_date_month,
+                                   levels =month.name )) %>% 
+  count(hotel, arrival_date_month, children) %>% 
+  group_by(hotel, children) %>% 
+  mutate(proportion=n/sum(n)) %>% 
+  ggplot(aes(arrival_date_month,proportion,fill=children))+
+  geom_col(position = "dodge")+
+  scale_y_continuous(labels=scales::percent_format())+
+  facet_wrap(~hotel, nrow = 2)
+
+#across the months, ppl with children are more abundant in summer. And this trend is even more pronounce for resort hotels. 
+
+```
+
+```{r}
+#do pppl that arrive with children need a car?
+hotel_stays %>% 
+
+  count(hotel, required_car_parking_spaces, children) %>% 
+  group_by(hotel, children) %>% 
+  mutate(proportion=n/sum(n)) %>% 
+  ggplot(aes(required_car_parking_spaces,proportion,fill=children))+
+  geom_col(position = "dodge")+
+  scale_y_continuous(labels=scales::percent_format())+
+  facet_wrap(~hotel, nrow = 2)
+```
+
+```{r}
+library(GGally)
+#to do pair plots
+#we select children, bc that is the thing that we are going to be predicting
+hotel_stays %>% 
+  select(children,adr,required_car_parking_spaces,total_of_special_requests) %>% 
+  ggpairs(mapping = aes(color=children))
+#ggpairs looks at all the data and decide what plot to make. 
+#it does a multipanel plot for us 
+
+```
+
+#build models with recipes
+
+```{r}
+#first create a modeling dataframe
+hotels_df<-hotel_stays %>% 
+  select(children,hotel,arrival_date_day_of_month,meal,adr,adults,required_car_parking_spaces,
+         total_of_special_requests,stays_in_week_nights,  stays_in_weekend_nights) %>% 
+  mutate_if(is.character,factor)
+```
+
+```{r}
+library(tidymodels)
+set.seed(1234)
+hotel_split<-initial_split(hotels_df)
+
+hotel_train<-training(hotel_split)
+hotel_testing<-testing(hotel_split)
+
+#predict children with everything else. Children is the outcome in the recipe
+hotel_rec<-recipe(children ~.,data=hotel_train ) %>% 
+  #need to balance the recipe, ML loves to say"look at those ppl without children XD. We are trying to make children variable even. then we make dummy variables, which turns all factors into numbers.bc some of the numbers are very large and others are very small, we need to normalise those. last step ois to prep the recipe, which goes to the training data and does the training. 
+  step_downsample(children) %>% 
+  step_dummy(all_nominal(),-all_outcomes()) %>% 
+  step_zv(all_numeric()) %>% 
+  step_normalize(all_numeric()) %>% 
+  prep()
+
+#this is to squeeze data out of the recipe
+juice(hotel_rec)
+juice(hotel_rec) %>%  count(children)
+#we hve successfully downsample the data!
+#####all this is data preprocessing and feature engineering. This prevents leaking of data from training data into testing data
+
+#now we can take this recipe and apply it to new data with bake. This gives me actual data. 
+test_proc<-bake(hotel_rec, new_data=hotel_testing)
+
+```
+
+#lets train some model with parnsip 
+```{r}
+###create a model, chose an engine an fit. Parsnip
+
+#we are gong to use kknn model is a classigication model cuz the hotels either do not have children or have children. kknn is sensitive to centering and scaling ( the big and small numbers issue)
+knn_spec<-nearest_neighbor() %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+#now we can fit this model
+ knn_fit<- knn_spec %>% 
+    fit(children ~ ., 
+        data=juice(hotel_rec))
+knn_fit
+
+tree_spec<-decision_tree() %>% 
+  set_engine("rpart") %>%
+    set_mode("classification")
+tree_fit<-tree_spec %>% 
+  fit(children ~.,
+      data=juice(hotel_rec))
+
+```
+
+#evaluate models 
+
+```{r}
+set.seed(1234)
+validation_splits<-mc_cv(juice(hotel_rec),prep=0.9,strata=children)
+
+knn_res<-fit_resamples(knn_spec, children ~ ., resamples = validation_splits, 
+    control = control_resamples(save_pred = TRUE))
+  #is fitting the model kknn model with the validation_splits data. This function is not doing any tunning. We are only stimating how good our model is fitting our data. fit_resamples does not fit but EVALUATES!!!
+knn_res %>%  collect_metrics()
+
+##
+tree_res<-fit_resamples(tree_spec, children ~ ., resamples = validation_splits, 
+    control = control_resamples(save_pred = TRUE))
+  #is fitting the model kknn model with the validation_splits data. This function is not doing any tunning. We are only stimating how good our model is fitting our data. fit_resamples does not fit but EVALUATES!!!
+tree_res %>%  collect_metrics()
+
+#bc knn_res ROC_AUC mean is bigger that that one of tree_res, knn is doing better
+```
+
+```{r}
+knn_res %>% 
+  unnest(.predictions) %>% 
+  mutate(model="kknn") %>% 
+  bind_rows(
+    tree_res %>% 
+  unnest(.predictions) %>% 
+  mutate(model="rpart")) %>% 
+  group_by(model) %>% 
+  roc_curve(children,.pred_children) %>% 
+  autoplot()
+#kknn performs better. Lets do a confusion matrix. The areas show which ones are correctly and incorrectly predicted. For instance, top left box, shows hotel that had childrens that were correctly predicted to have children.
+knn_res %>% 
+  unnest(.predictions) %>% 
+  conf_mat(children,.pred_class) %>% 
+  autoplot()
+```
+
+```{r}
+#going back to the test data to see how this test data would perform on new data. Predict from parsnip always returns a tibble
+
+ knn_fit %>% 
+  predict(new_data=test_proc,type="prob") %>% 
+#this is the probability that in everyexample in the test set this is the probability hotel will have children and not 
+  mutate(truth=hotel_testing$children) %>% 
+#this is the true answer
+  roc_auc(truth, .pred_children)
+
+#this roc_auc is very similar to the one in the validation set, so it is an excellent job!!
+
+#we have used recipes for preprocessing, then validation spli ts for evaluating and at the very end test data to see how we expect our model to do on new data. 
+```
+
