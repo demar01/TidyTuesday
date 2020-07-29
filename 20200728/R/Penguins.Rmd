@@ -1,0 +1,144 @@
+---
+title: "Penguins"
+author: "Maria Dermit"
+date: "28/07/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+  knitr::opts_chunk$set(cache = TRUE, warning = FALSE, message = FALSE, echo=TRUE, 
+                        dpi = 100, fig.width = 13,fig.height = 8)
+library(tidyverse)
+library(tidytuesdayR)
+library(ggstatsplot)
+library(here)
+library(tidybayes)
+library(GGally)
+  
+
+```
+
+```{r}
+
+
+## Getting the data
+tuesdata <- tidytuesdayR::tt_load('2020-07-28')
+tuesdata <- tidytuesdayR::tt_load(2020, week = 31)
+penguins <- tuesdata$penguins
+penguins %>% View()
+```
+
+
+
+## Exploring the data
+penguins %>% group_by(species,sex) %>% 
+ summarise(mean = mean(body_mass_g), n = n())
+```{r}
+
+penguins %>%
+split(.$species) %>%
+ map(~ lm(body_mass_g ~ sex, data = .x))
+ 
+#Rename the sex parameter to called "NA" as "binary"
+penguins<-penguins %>%  mutate_if(is.character,as.factor)  %>% 
+mutate(sex = case_when(
+sex=="female" ~ "female",
+sex=="male" ~ "male",
+ TRUE ~ "binary",
+))
+# plot
+ggstatsplot::grouped_ggbetweenstats(
+  data = penguins,
+  x = sex,    
+  xlab="",
+  y = body_mass_g,
+  grouping.var = species, # grouping variable
+  pairwise.comparisons = TRUE, # display significant pairwise comparisons
+  p.adjust.method = "bonferroni", # method for adjusting p-values for multiple comparisons
+  # adding new components to `ggstatsplot` default
+  ggplot.component = list(ggplot2::scale_y_continuous(sec.axis = ggplot2::dup_axis())),
+  k = 3,
+  title.prefix = "Species",
+  palette = "default_jama",
+  package = "ggsci",
+  plotgrid.args = list(nrow = 3),
+)
+
+#ggsave("/Documents/TidyTuesdays/tidyversewebninar/20200728/plots/grouped_ggbetweenstats.jpg")
+
+```
+
+```{r}
+penguins_clean = penguins %>%
+  mutate(species = factor(species))
+  
+penguins_clean %>% 
+  select(species,bill_length_mm,bill_depth_mm, flipper_length_mm    ,body_mass_g) %>% ggpairs(mapping = aes(color=species))
+  
+penguins_clean %>% 
+ select(sex,species,bill_length_mm,bill_depth_mm, flipper_length_mm ,body_mass_g) %>% 
+  ggplot(aes(species, body_mass_g, color = species)) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(aes(alpha = sex), width = 0.15) +
+  facet_wrap(~sex) 
+```
+Gentoo male penguins are the the chubbiest among these three species. 
+It looks like more body weight is associated with longer flipper length and with less bill depth (so more pointy mouth).Lets do a linear regression model for body weigths of these cute penguins.
+
+
+# Modeling 
+```{r}
+line_fit <- lm(body_mass_g~flipper_length_mm, data=penguins_clean)
+line_smry <- summary(line_fit)
+line_smry 
+```
+The R^2 value for this model is 0.759, which means that this model explains 75.9% of the variance (not sufficient).
+We gain some information from our hypothesis test using this model.
+
+
+We can use step function to choose a the model with lowest AIC.
+```{r}
+step_fit=step(lm(data=penguins_clean, body_mass_g ~ .),trace=0,steps=10000)
+step_smry <- summary(step_fit)
+step_smry 
+
+best_fit <-lm(formula = body_mass_g ~ species + bill_length_mm + bill_depth_mm + 
+    flipper_length_mm + sex + year, data = penguins_clean)
+
+best_smry <- summary(best_fit)
+best_smry 
+
+```
+This model captures 87.64% of total variance in body weight. The p-value: < 2.2e-16
+This looks like a more robust highly predictive model.
+```{r}
+
+library(broom)
+glance(best_fit) %>%
+select( sigma, logLik, AIC, BIC, df.residual) %>%
+  kable()
+
+```
+
+```{r}
+penguins_clean$best_fit <- stats::predict(best_fit, newdata=penguins_clean)
+err <- stats::predict(best_fit, newdata=penguins_clean, se = TRUE)
+pred.int <-predict(best_fit, newdata = penguins_clean, interval = "confidence")
+penguins_clean_conf <- cbind(penguins_clean, pred.int)
+
+g <- ggplot(penguins_clean_conf)
+g <- g + geom_point(aes(x=body_mass_g, y = best_fit), size = 2, colour = "blue")
+g <- g + geom_smooth(data=penguins_clean_conf, aes(x=body_mass_g, y=best_fit, ymin=lwr, ymax=upr), size = 1.5, 
+            colour = "red", se = TRUE, stat = "smooth") + 
+  theme_classic()
+  g
+  
+  anim <- g +
+  transition_states(species,
+                    transition_length = 2,
+                    state_length = 1)
+
+anim
+```
+
